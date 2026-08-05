@@ -1,0 +1,63 @@
+name: Release Obsidian plugin
+
+# manifest.json の version と一致するタグ (例: 0.1.0) を push すると、
+# プラグインをビルドして GitHub Release に main.js / manifest.json を添付する。
+#
+#   npm version patch            # manifest.json と package.json の version を更新
+#   git commit -am "Release x.y.z"
+#   git tag x.y.z                # Obsidian の規約に従い "v" を付けない
+#   git push && git push --tags
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+
+      - name: Verify tag matches manifest version
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          manifest_version="$(node -p "require('./manifest.json').version")"
+          if [ "$tag" != "$manifest_version" ]; then
+            echo "::error::タグ ($tag) が manifest.json の version ($manifest_version) と一致しません。" \
+                 "Obsidian ではリリースタグと manifest の version が完全一致している必要があります。"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        run: npm run build
+
+      - name: Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+
+          # 添付する成果物。存在するものだけを渡す (styles.css は任意)。
+          assets="main.js manifest.json"
+          if [ -f styles.css ]; then
+            assets="$assets styles.css"
+          fi
+
+          gh release create "$tag" \
+            --title "$tag" \
+            --generate-notes \
+            $assets
