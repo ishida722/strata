@@ -1,17 +1,19 @@
 name: Release Obsidian plugin
 
-# manifest.json の version と一致するタグ (例: 0.1.0) を push すると、
-# プラグインをビルドして GitHub Release に main.js / manifest.json を添付する。
+# リリースの起動方法は 2 通り:
+#   1. main への push … manifest.json の version に対応する Release が未作成なら自動で作成
+#      （= version を上げて main に push すればリリースされる）
+#   2. タグ push (例: 0.1.0) … タグと manifest.json の version の一致を検証して作成
 #
-#   npm version patch            # manifest.json と package.json の version を更新
-#   git commit -am "Release x.y.z"
-#   git tag x.y.z                # Obsidian の規約に従い "v" を付けない
-#   git push && git push --tags
+# いずれもプラグインをビルドして main.js / manifest.json を Release に添付する。
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -29,27 +31,51 @@ jobs:
         with:
           node-version: "20.x"
 
-      - name: Verify tag matches manifest version
+      - name: Resolve tag from manifest / ref
+        id: vars
         run: |
-          tag="${GITHUB_REF#refs/tags/}"
-          manifest_version="$(node -p "require('./manifest.json').version")"
-          if [ "$tag" != "$manifest_version" ]; then
-            echo "::error::タグ ($tag) が manifest.json の version ($manifest_version) と一致しません。" \
-                 "Obsidian ではリリースタグと manifest の version が完全一致している必要があります。"
-            exit 1
+          version="$(node -p "require('./manifest.json').version")"
+          if [ "$GITHUB_REF" != "${GITHUB_REF#refs/tags/}" ]; then
+            # タグ push で起動した場合はタグと version の一致を検証
+            tag="${GITHUB_REF#refs/tags/}"
+            if [ "$tag" != "$version" ]; then
+              echo "::error::タグ ($tag) が manifest.json の version ($version) と一致しません。" \
+                   "Obsidian ではリリースタグと manifest の version が完全一致している必要があります。"
+              exit 1
+            fi
+          else
+            # main への push / 手動起動では version をそのままタグにする
+            tag="$version"
           fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Install dependencies
-        run: npm install
-
-      - name: Build
-        run: npm run build
-
-      - name: Create release
+      - name: Check if release already exists
+        id: check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="${GITHUB_REF#refs/tags/}"
+          tag="${{ steps.vars.outputs.tag }}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "リリース $tag は既に存在します。ビルド・作成をスキップします。"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install dependencies
+        if: steps.check.outputs.exists == 'false'
+        run: npm install
+
+      - name: Build
+        if: steps.check.outputs.exists == 'false'
+        run: npm run build
+
+      - name: Create release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ steps.vars.outputs.tag }}"
 
           # 添付する成果物。存在するものだけを渡す (styles.css は任意)。
           assets="main.js manifest.json"
@@ -59,5 +85,6 @@ jobs:
 
           gh release create "$tag" \
             --title "$tag" \
+            --target "$GITHUB_SHA" \
             --generate-notes \
             $assets
